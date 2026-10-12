@@ -120,7 +120,10 @@ async def handle_worker_exit(
         orch._persisted_retry_attempts.pop(issue_id, None)
         orch._clear_issue_flags(issue_id, retry_attempt=True)
         log.info("terminal_worker_cancelled", issue_id=issue_id, state=entry.issue.state)
-    elif reason == "normal":
+    elif reason == "normal" or (reason == "cancelled" and entry.hit_token_budget):
+        # The token cap cancels the worker task itself, so a capped worker
+        # exits "cancelled". Route it through the normal exit so the cap
+        # honors budget_exhausted_state instead of auto-pausing as an error.
         if not await _handle_normal_exit(orch, issue_id, entry, debug, reason, error):
             return
     elif reason == "shutdown_interrupted":

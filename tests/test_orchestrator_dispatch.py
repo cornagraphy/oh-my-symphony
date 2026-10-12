@@ -4277,6 +4277,83 @@ def test_max_total_tokens_exhaustion_persists_via_tracker_transition(monkeypatch
     asyncio.run(_run())
 
 
+def test_max_total_tokens_cancelled_exit_persists_budget_state(monkeypatch):
+    """The cap cancels the worker task, so production exits with reason
+    ``cancelled``, not ``normal``. That exit must still move the ticket to
+    ``budget_exhausted_state`` instead of auto-pausing it as a worker error:
+    a paused retry keeps its slot and leaves the card in an active lane.
+    """
+    base_cfg = _make_config(max_concurrent=1)
+    cfg_capped = _replace_agent_field(
+        base_cfg,
+        max_total_tokens=1_000,
+        budget_exhausted_state="Blocked",
+    )
+    orch = _orch()
+    issue = _issue("MT-CAP-CANCEL", state="In Progress")
+
+    async def _run() -> None:
+        orch._loop = asyncio.get_running_loop()
+        _stub_workflow_state_returning(orch, cfg_capped, monkeypatch)
+        monkeypatch.setattr(orch, "_tracker_call_states_by_ids", lambda cfg, ids: [issue])
+
+        transitions: list[tuple[str, str]] = []
+
+        def _capture_update_state(cfg, captured_issue, target_state):
+            transitions.append((captured_issue.identifier, target_state))
+
+        monkeypatch.setattr(orch, "_tracker_call_update_state", _capture_update_state)
+        monkeypatch.setattr(
+            orch, "_tracker_call_append_note", lambda cfg, i, heading, body: None
+        )
+
+        async def _noop() -> None:
+            await asyncio.sleep(3600)
+
+        worker_task = asyncio.create_task(_noop())
+
+        try:
+            orch._running[issue.id] = RunningEntry(
+                issue=issue,
+                started_at=datetime.now(timezone.utc),
+                retry_attempt=None,
+                worker_task=worker_task,
+                workspace_path=Path("/tmp"),
+            )
+
+            await orch._on_codex_event(
+                issue.id,
+                {
+                    "event": "other_message",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "payload": {"type": "assistant"},
+                    "usage": {
+                        "input_tokens": 1_500,
+                        "output_tokens": 200,
+                        "total_tokens": 1_700,
+                    },
+                    "rate_limits": None,
+                },
+            )
+
+            await orch._on_worker_exit(issue.id, reason="cancelled", error=None)
+
+            assert transitions == [("MT-CAP-CANCEL", "Blocked")]
+            assert issue.id not in orch._paused_issue_ids
+            assert issue.id not in orch._retry
+            assert issue.id in orch._turn_budget_exhausted
+        finally:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            for retry in list(orch._retry.values()):
+                retry.timer_handle.cancel()
+
+    asyncio.run(_run())
+
+
 def test_max_total_tokens_allows_continuation_when_ticket_advanced(monkeypatch):
     """If the capped worker already moved the ticket, run the next stage.
 
