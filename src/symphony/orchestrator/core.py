@@ -197,6 +197,8 @@ _FAILED_BLOCKER_TERMINAL_STATES = {
     "canceled",
     "duplicate",
     "human review",
+    # Aide's review lane: the PR is still unmerged while Claude reviews it.
+    "reviewing",
 }
 _RETRYABLE_WORKER_ERROR_MARKERS = (
     "429",

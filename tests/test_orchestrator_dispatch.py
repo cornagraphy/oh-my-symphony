@@ -433,6 +433,15 @@ def test_todo_with_human_review_blocker_remains_blocked():
     assert orch._should_dispatch(issue, cfg) is False
 
 
+def test_todo_with_reviewing_blocker_remains_blocked():
+    cfg = _make_config(terminal_states=("Human Review", "Reviewing", "Done", "Blocked"))
+    orch = _orch()
+    blocker = BlockerRef(id="z", identifier="MT-9", state="Reviewing")
+    issue = _issue("MT-1", state="Todo", blocked_by=(blocker,))
+
+    assert orch._should_dispatch(issue, cfg) is False
+
+
 def test_tick_normalizes_legacy_human_review_confirm_done_before_candidates(
     monkeypatch,
 ):
